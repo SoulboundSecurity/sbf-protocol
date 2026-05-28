@@ -3,7 +3,6 @@ pragma solidity ^0.8.19;
 
 /**
  * @title IERC20Send — Minimal send-only interface (no transferFrom)
- * @dev ClaimPool only sends tokens out. It never pulls from users.
  */
 interface IERC20Send {
     function transfer(address to, uint256 amount) external returns (bool);
@@ -11,11 +10,15 @@ interface IERC20Send {
 }
 
 /**
+ * @title IERC20Approve — Minimal approve interface for pull-style integrations
+ */
+interface IERC20Approve {
+    function approve(address spender, uint256 amount) external returns (bool);
+}
+
+/**
  * @title ClaimPool
  * @notice Processes anonymous OTU redemptions across multiple tokens
- * @dev Operated by backend. Receives (OTU amount + gas fee) from DepositPool.
- *      Protocol fees go directly to treasury from DepositPool — ClaimPool never touches them.
- *      Recipient addresses are ephemeral: used only for the redemption tx, never stored.
  * @custom:security-contact security@soulbound.finance
  */
 contract ClaimPool {
@@ -106,8 +109,6 @@ contract ClaimPool {
      * @param token ERC-20 token address
      * @param otuAmount Amount reserved for OTU redemptions
      * @param gasFee Amount reserved for gas fund
-     * @dev DepositPool transfers tokens first, then calls this to update accounting.
-     *      Protocol fees are sent directly to treasury by DepositPool — never pass through here.
      */
     function receiveFunds(address token, uint256 otuAmount, uint256 gasFee) external onlyDepositPool {
         redemptionBalance[token] += otuAmount;
@@ -119,7 +120,6 @@ contract ClaimPool {
 
     /**
      * @notice Receive native ETH from DepositPool
-     * @dev Called with msg.value = otuAmount + gasFee. DepositPool provides the breakdown.
      */
     function receiveFundsETH(uint256 otuAmount, uint256 gasFee) external payable onlyDepositPool {
         if (msg.value != otuAmount + gasFee) revert InvalidAmount();
@@ -220,9 +220,6 @@ contract ClaimPool {
 
     /**
      * @notice Deposit ETH into gas fund — for swap proceeds or direct top-ups
-     * @dev Enables the full swap cycle: gasManager pulls ERC-20 via useGasFund,
-     *      swaps to ETH externally (e.g. Uniswap), deposits ETH back here.
-     *      Also serves as emergency top-up if gas fund runs low.
      */
     function depositGasFundETH() external payable onlyGasManager {
         if (msg.value == 0) revert InvalidAmount();
@@ -233,11 +230,14 @@ contract ClaimPool {
     }
 
     /**
-     * @notice Use gas fund for DeFi operations (AAVE yield, etc.)
-     * @param token Token to use from gas fund
+     * @notice Use gas fund — push-style. Transfers tokens to target, then calls target.
+     * @param token Token to use from gas fund (ETH = address(0))
      * @param amount Amount to use
-     * @param target Target contract
-     * @param data Call data
+     * @param target Recipient address — must accept pushed tokens directly
+     *               (EOA wallets, custom receiver contracts, or any target that does
+     *               NOT rely on transferFrom to pull). For pull-style targets like
+     *               Aave / Compound / Uniswap, use useGasFundApprove instead.
+     * @param data Optional call data executed against target after transfer (no-op if empty)
      * @param purpose Description for audit trail
      */
     function useGasFund(
@@ -264,6 +264,45 @@ contract ClaimPool {
                 if (!callSuccess) revert TransferFailed();
             }
         }
+
+        emit GasFundUsed(token, target, amount, purpose);
+    }
+
+    /**
+     * @notice Use gas fund — pull-style. Grants target an allowance, executes call, resets allowance to zero.
+     * @param token ERC-20 token from gas fund (ETH not supported — use useGasFund for native)
+     * @param amount Amount to make available to target via allowance
+     * @param target Contract that pulls tokens via transferFrom (Aave Pool.supply, Compound cToken.mint,
+     *               Uniswap router swaps, etc.)
+     * @param data Call data executed against target after approval — required (zero-length reverts)
+     * @param purpose Description for audit trail
+     * @dev Non-compliant tokens that omit the bool return from approve() (e.g. USDT) are
+     *      explicitly NOT supported. The bool return is required by ERC-20; tokens that
+     *      omit it will revert the EVM ABI decode and this function will revert. Use a
+     *      compliant token or a wrapper. We do not muddy this code path to accommodate
+     *      tokens that fail to write proper ERC-20.
+     */
+    function useGasFundApprove(
+        address token,
+        uint256 amount,
+        address target,
+        bytes calldata data,
+        string calldata purpose
+    ) external onlyGasManager validAddress(target) {
+        if (amount == 0) revert InvalidAmount();
+        if (token == ETH) revert InvalidAddress();
+        if (gasFundBalance[token] < amount) revert InsufficientBalance();
+        if (data.length == 0) revert InvalidArrayLength();
+
+        gasFundBalance[token] -= amount;
+
+        if (!IERC20Approve(token).approve(target, amount)) revert TransferFailed();
+
+        (bool callSuccess,) = target.call(data);
+        if (!callSuccess) revert TransferFailed();
+
+        // Reset allowance to zero — defense in depth against any residual approval
+        if (!IERC20Approve(token).approve(target, 0)) revert TransferFailed();
 
         emit GasFundUsed(token, target, amount, purpose);
     }

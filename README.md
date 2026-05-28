@@ -132,6 +132,16 @@ This protocol has not yet been audited. Use at your own risk.
 
 To report a vulnerability: **security@soulboundsecurity.io**
 
+### Responsible Disclosure Log
+
+Public record of accepted vulnerability disclosures and the changes shipped in
+response lives in [`audits/`](audits/). Operators deploying forks should review
+these entries to understand which findings apply to their architecture.
+
+For platforms that want the Soulbound Finance-style off-chain mitigations on
+top of the on-chain protocol (address-bound identity verification at the auth
+boundary), see [SBA-Auth](https://github.com/SoulboundSecurity/SBA-Auth).
+
 ## Links
 
 - **Website:** [soulboundsecurity.io](https://soulboundsecurity.io)

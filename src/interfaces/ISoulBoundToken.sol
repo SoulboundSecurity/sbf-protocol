@@ -7,7 +7,7 @@ pragma solidity ^0.8.19;
  */
 interface ISoulBoundToken {
     function hasSBT(address account) external view returns (bool);
-    function getAccountData(address account) external view returns (bytes32 encryptedAccountId, uint256 nonce);
+    function getAccountData(address account) external view returns (bytes32 soulboundId, uint256 nonce);
     function incrementNonce(address account) external returns (uint256);
     function totalSBTs() external view returns (uint256);
 }

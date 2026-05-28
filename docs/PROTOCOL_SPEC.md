@@ -35,18 +35,29 @@ Non-transferable identity token. One per address. Cannot be burned or transferre
 
 | Field | Type | Purpose |
 |-------|------|---------|
-| `encryptedAccountId` | `bytes32` | Hashed account identifier. Deterministic, non-reversible. |
+| `soulboundId` | `bytes32` | Canonical identifier — `keccak256(abi.encodePacked(msg.sender, ACCOUNT_ID_SALT, block.chainid))`. Derived on-chain at mint, not caller-supplied. |
 | `zkpCommitment` | `bytes32` | Privado ID ZKP commitment. Updateable by holder. |
 | `nonce` | `uint256` | OTU generation counter. Incremented by DepositPool on each `generateOTU`. |
 | `mintedAt` | `uint256` | Block timestamp at mint. |
 | `eulaHash` | `bytes32` | EULA hash accepted at mint time. |
 
+`ACCOUNT_ID_SALT` is a `private constant` set to `"YOURSALT"` in the upstream
+AGPL-3.0 source — **forks SHOULD replace it with a value unique to their
+deployment** to prevent cross-deployment identifier collision. The view
+function `generateSoulboundId(address)` returns exactly what a fresh mint by
+that address would produce (canonical predictor, useful for off-chain dApps).
+
 ### Mint Flow
 
 1. Controller sets `currentEulaHash` on the contract.
-2. User calls `mintSBT(encryptedAccountId, zkpCommitment, eulaHash)`.
-3. Contract verifies: no existing SBT for caller, valid account ID, EULA hash matches current.
-4. SBT is created. The transaction signature constitutes cryptographic EULA acceptance.
+2. User calls `mintSBT(zkpCommitment, eulaHash)`.
+3. Contract verifies: no existing SBT for caller, EULA hash matches current.
+4. Contract derives `soulboundId` from `msg.sender + salt + chainid` and stores
+   the SBT. The transaction signature constitutes cryptographic EULA acceptance.
+
+The identifier is NOT a caller-supplied parameter. Earlier protocol versions
+accepted an arbitrary `bytes32` here, allowing distinct addresses to mint
+colliding identifiers — see [audits/2026-05-28-gakarot-disclosure.md](../audits/2026-05-28-gakarot-disclosure.md).
 
 ### ZKP Commitment
 
@@ -136,7 +147,7 @@ Protocol fees never pass through ClaimPool.
 
 ### Emergency Withdrawal
 
-`emergencyWithdraw(token)` returns the caller's full balance for a given token. No fees. Intended for emergency use only. Requires SBT.
+`emergencyWithdraw(token)` returns the caller's full balance for a given token. No fees. No token whitelist check — works even if the token was delisted after deposit. Requires SBT.
 
 ### Access Control
 
@@ -191,6 +202,14 @@ OTUAttestation(
 
 The purpose string is hashed (`keccak256`) in the struct. The wallet displays the full typed data to the user before signing.
 
+### Attestation as Legal Record
+
+The EIP-712 signature creates an immutable on-chain record of the user's
+purpose declaration at the moment of OTU generation. If a user selects
+CHARITABLE for a commercial transaction, they have cryptographically signed
+a false attestation on an immutable ledger. Compliance exposure for false
+attestations rests with the signer, not the protocol.
+
 ### Replay Prevention
 
 The `nonce` field is the caller's current SBT nonce. After `generateOTU` succeeds, the nonce increments, invalidating the signature for reuse. Each attestation is bound to a specific depositor, token, amount, tier, and nonce — it cannot be reused for a different transaction.
@@ -240,12 +259,26 @@ Processes multiple redemptions in a single transaction. Single token per batch f
 
 ### Gas Fund
 
-`useGasFund(token, amount, target, data, purpose)`
+Two flavors for different integration shapes. Gas manager only. Both withdraw
+from `gasFundBalance[token]` and execute a call against `target`.
 
-- Gas manager only.
-- Withdraws from `gasFundBalance[token]`.
-- Executes arbitrary call to target with provided data and value.
-- Intended for AAVE yield deployment, gas subsidies, and protocol operations.
+`useGasFund(token, amount, target, data, purpose)` — **push-style.** Transfers
+tokens directly to `target`, then calls. Use for targets that accept pushed
+tokens: EOA wallets, custom receiver contracts, off-chain swap intermediaries.
+ETH supported.
+
+`useGasFundApprove(token, amount, target, data, purpose)` — **pull-style.**
+Grants `target` an allowance, executes the call (which is expected to pull via
+`transferFrom`), then resets the allowance to zero. Use for any DeFi protocol
+that follows the standard ERC-20 allowance pattern: Aave `Pool.supply`,
+Compound `cToken.mint`, Uniswap router swaps, etc. ETH not supported (use
+`useGasFund` for native).
+
+**Token compliance.** `useGasFundApprove` requires standard ERC-20 `approve`
+behavior — the function MUST return `bool`. Non-compliant tokens that omit
+the bool return from `approve()` (notably USDT) are explicitly NOT supported
+and will revert the EVM ABI decode. The protocol does not muddy this code
+path to accommodate tokens that fail to write proper ERC-20.
 
 ### Access Control
 
@@ -255,6 +288,7 @@ Processes multiple redemptions in a single transaction. Single token per batch f
 | `processRedemption` | Operator |
 | `batchProcessRedemptions` | Operator |
 | `useGasFund` | Gas manager |
+| `useGasFundApprove` | Gas manager |
 | `setDepositPool` | Operator (one-time) |
 | `setGasManager` | Operator |
 | `changeOperator` | Operator |

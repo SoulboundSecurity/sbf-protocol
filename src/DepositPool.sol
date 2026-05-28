@@ -231,14 +231,6 @@ contract DepositPool {
      * @param amount OTU face value — fees are charged ON TOP
      * @param tier CHARITABLE (1% + 0.25%) or COMMERCIAL (2% + 0.25%, when enabled)
      * @param attestationSig EIP-712 signature from user attesting to purpose
-     *
-     * @dev Fee flow:
-     *   1. Protocol fee → protocolTreasury (direct transfer)
-     *   2. OTU amount + gas fee → ClaimPool (via receiveFunds/receiveFundsETH)
-     *
-     *   The attestation creates an immutable on-chain record. If a user selects
-     *   CHARITABLE for commercial use, they've signed a false attestation on an
-     *   immutable ledger. Their legal exposure, not ours.
      */
     function generateOTU(
         address token,
@@ -375,7 +367,6 @@ contract DepositPool {
 
     /**
      * @notice Set protocol treasury (can be updated — not one-time)
-     * @dev Treasury can be changed for multisig rotation, etc.
      */
     function setProtocolTreasury(address _treasury) external onlyController validAddress(_treasury) {
         protocolTreasury = _treasury;
@@ -389,7 +380,7 @@ contract DepositPool {
 
     /**
      * @notice Update fee rates (capped at 500 bps / 5% each)
-     * @dev Gas fee (25 bps) is immutable — can never be changed
+     * @dev Gas fee is immutable once deployed
      */
     function updateFees(uint256 _charitableBps, uint256 _commercialBps) external onlyController {
         if (_charitableBps > 500 || _commercialBps > 500) revert FeeTooHigh();

@@ -6,13 +6,13 @@ import "./interfaces/ISoulBoundToken.sol";
 /**
  * @title SoulBoundToken
  * @notice Non-transferable token representing persistent user identity
- * @dev Provides access control, OTU generation tracking, ZKP commitment for Privado ID,
- *      and EULA acceptance gate. No fee tier stored — fees are per-transaction via attestation.
  * @custom:security-contact security@soulbound.finance
  */
 contract SoulBoundToken is ISoulBoundToken {
+    string private constant ACCOUNT_ID_SALT = "YOURSALT";
+
     struct SBTData {
-        bytes32 encryptedAccountId;  // Hashed account ID (never raw address)
+        bytes32 soulboundId;         // Canonically derived identifier (never raw address)
         bytes32 zkpCommitment;       // Privado ID ZKP commitment hash
         uint256 nonce;               // OTU generation counter (prevents replay)
         uint256 mintedAt;            // Creation timestamp
@@ -32,7 +32,7 @@ contract SoulBoundToken is ISoulBoundToken {
     // Events
     event SBTMinted(
         address indexed owner,
-        bytes32 indexed encryptedAccountId,
+        bytes32 indexed soulboundId,
         bytes32 zkpCommitment,
         bytes32 eulaHash,
         uint256 timestamp
@@ -45,7 +45,6 @@ contract SoulBoundToken is ISoulBoundToken {
 
     // Errors
     error SBTAlreadyExists();
-    error InvalidAccountId();
     error InvalidZKPCommitment();
     error SBTNotFound();
     error UnauthorizedAccess();
@@ -79,7 +78,6 @@ contract SoulBoundToken is ISoulBoundToken {
     /**
      * @notice Set or update the required EULA hash
      * @param _eulaHash keccak256 hash of the current EULA document
-     * @dev Only controller. Must be set before any mints can occur.
      */
     function setEulaHash(bytes32 _eulaHash) external onlyController {
         if (_eulaHash == bytes32(0)) revert EulaMismatch();
@@ -91,25 +89,24 @@ contract SoulBoundToken is ISoulBoundToken {
     // ─── Minting ───────────────────────────────────────────────────────
 
     /**
-     * @notice Mint SBT with EULA acceptance gate
-     * @param _encryptedAccountId Hashed account identifier
+     * @notice Mint SBT with EULA acceptance gate. soulboundId is derived canonically from msg.sender.
      * @param _zkpCommitment Privado ID ZKP commitment (can be bytes32(0) if not yet verified)
      * @param _eulaHash Must match currentEulaHash — the transaction signature IS the acceptance
-     * @dev The act of calling this function with the correct EULA hash, signed by the user's
-     *      wallet, constitutes cryptographic proof of EULA acceptance on an immutable ledger.
      */
     function mintSBT(
-        bytes32 _encryptedAccountId,
         bytes32 _zkpCommitment,
         bytes32 _eulaHash
     ) external {
         if (_sbtRegistry[msg.sender].exists) revert SBTAlreadyExists();
-        if (_encryptedAccountId == bytes32(0)) revert InvalidAccountId();
         if (currentEulaHash == bytes32(0)) revert EulaNotSet();
         if (_eulaHash != currentEulaHash) revert EulaMismatch();
 
+        bytes32 derivedSoulboundId = keccak256(
+            abi.encodePacked(msg.sender, ACCOUNT_ID_SALT, block.chainid)
+        );
+
         _sbtRegistry[msg.sender] = SBTData({
-            encryptedAccountId: _encryptedAccountId,
+            soulboundId: derivedSoulboundId,
             zkpCommitment: _zkpCommitment,
             nonce: 0,
             mintedAt: block.timestamp,
@@ -119,7 +116,7 @@ contract SoulBoundToken is ISoulBoundToken {
 
         unchecked { ++_totalSBTs; }
 
-        emit SBTMinted(msg.sender, _encryptedAccountId, _zkpCommitment, _eulaHash, block.timestamp);
+        emit SBTMinted(msg.sender, derivedSoulboundId, _zkpCommitment, _eulaHash, block.timestamp);
     }
 
     // ─── ZKP Commitment ────────────────────────────────────────────────
@@ -127,8 +124,6 @@ contract SoulBoundToken is ISoulBoundToken {
     /**
      * @notice Update ZKP commitment after Privado ID verification
      * @param _zkpCommitment New ZKP commitment hash
-     * @dev Only the SBT holder can update their own commitment.
-     *      This is the dynamic value on the SBT — identity evolves, token stays.
      */
     function updateZKPCommitment(bytes32 _zkpCommitment) external {
         if (!_sbtRegistry[msg.sender].exists) revert SBTNotFound();
@@ -138,15 +133,15 @@ contract SoulBoundToken is ISoulBoundToken {
         emit ZKPCommitmentUpdated(msg.sender, _zkpCommitment);
     }
 
-    // ─── Account ID Generation ─────────────────────────────────────────
+    // ─── Soulbound ID Generation ───────────────────────────────────────
 
     /**
-     * @notice Generate encrypted account ID for privacy preservation
+     * @notice Generate canonical soulboundId for an address (matches mintSBT derivation)
      * @param account Address to generate ID for
      * @return bytes32 Deterministic hash — avoids storing raw addresses
      */
-    function generateEncryptedAccountId(address account) external view validAddress(account) returns (bytes32) {
-        return keccak256(abi.encodePacked(account, "SBF_ALPHA_V1", block.chainid));
+    function generateSoulboundId(address account) external view validAddress(account) returns (bytes32) {
+        return keccak256(abi.encodePacked(account, ACCOUNT_ID_SALT, block.chainid));
     }
 
     // ─── ISoulBoundToken Implementation ────────────────────────────────
@@ -160,7 +155,7 @@ contract SoulBoundToken is ISoulBoundToken {
     function getAccountData(address account) external view override returns (bytes32, uint256) {
         if (!_sbtRegistry[account].exists) revert SBTNotFound();
         SBTData storage data = _sbtRegistry[account];
-        return (data.encryptedAccountId, data.nonce);
+        return (data.soulboundId, data.nonce);
     }
 
     /// @inheritdoc ISoulBoundToken
@@ -205,7 +200,7 @@ contract SoulBoundToken is ISoulBoundToken {
      * @notice Get complete SBT data for an account
      */
     function getSBTData(address account) external view returns (
-        bytes32 encryptedAccountId,
+        bytes32 soulboundId,
         bytes32 zkpCommitment,
         uint256 nonce,
         uint256 mintedAt,
@@ -213,7 +208,7 @@ contract SoulBoundToken is ISoulBoundToken {
         bool exists
     ) {
         SBTData storage data = _sbtRegistry[account];
-        return (data.encryptedAccountId, data.zkpCommitment, data.nonce, data.mintedAt, data.eulaHash, data.exists);
+        return (data.soulboundId, data.zkpCommitment, data.nonce, data.mintedAt, data.eulaHash, data.exists);
     }
 
     function isInitialized() external view returns (bool) {
