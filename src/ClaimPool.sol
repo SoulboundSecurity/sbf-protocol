@@ -43,6 +43,7 @@ contract ClaimPool {
     // Security
     uint256 public maxBatchSize;
     mapping(bytes32 => bool) public processedRedemptions;   // Double-spend prevention
+    mapping(address => bool) public approvedTargets;       // For gas fund operations, whitelist of approved target addresses (defense in depth)
 
     // ─── Events ────────────────────────────────────────────────────────
 
@@ -60,6 +61,7 @@ contract ClaimPool {
     event OperatorChanged(address indexed oldOperator, address indexed newOperator);
     event GasManagerChanged(address indexed oldManager, address indexed newManager);
     event DepositPoolSet(address indexed depositPool);
+    event TargetWhitelisted(address indexed target, bool approved);
 
     // ─── Errors ────────────────────────────────────────────────────────
 
@@ -71,6 +73,7 @@ contract ClaimPool {
     error InvalidAddress();
     error InvalidArrayLength();
     error AlreadyConfigured();
+    error TargetNotWhitelisted();
 
     // ─── Modifiers ─────────────────────────────────────────────────────
 
@@ -248,6 +251,7 @@ contract ClaimPool {
         string calldata purpose
     ) external onlyGasManager validAddress(target) {
         if (amount == 0) revert InvalidAmount();
+        if (!approvedTargets[target]) revert TargetNotWhitelisted();
         if (gasFundBalance[token] < amount) revert InsufficientBalance();
 
         gasFundBalance[token] -= amount;
@@ -290,6 +294,7 @@ contract ClaimPool {
         string calldata purpose
     ) external onlyGasManager validAddress(target) {
         if (amount == 0) revert InvalidAmount();
+        if (!approvedTargets[target]) revert TargetNotWhitelisted();
         if (token == ETH) revert InvalidAddress();
         if (gasFundBalance[token] < amount) revert InsufficientBalance();
         if (data.length == 0) revert InvalidArrayLength();
@@ -337,6 +342,21 @@ contract ClaimPool {
         address old = operator;
         operator = newOperator;
         emit OperatorChanged(old, newOperator);
+    }
+
+        /**
+     * @notice Adds or removes a target address from the whitelist for Gas Manager operations
+     * @param target The external contract address to authorize or revoke
+     * @param approved Boolean indicating if the target is permitted for interaction
+     * @dev Enforces strict protocol boundaries. Prevents arbitrary interactions with token 
+     *      contracts to ensure redemption balances remain strictly isolated, while permitting 
+     *      the gas fund to route through vetted integrations. This defense-in-depth 
+     *      measure ensures the Gas Manager operates within a predictable, restricted execution environment.
+     */
+    function setApprovedTarget(address target, bool approved) external onlyOperator {
+        if (target == address(0)) revert InvalidAddress();
+        approvedTargets[target] = approved;
+        emit TargetWhitelisted(target, approved);
     }
 
     // ─── View Functions ────────────────────────────────────────────────
