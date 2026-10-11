@@ -147,7 +147,7 @@ To report a vulnerability: **security@soulboundsecurity.io**
 
 Accepted vulnerability disclosures, and the changes shipped in response, are recorded in [`audits/`](audits/). Operators deploying forks should review these entries to understand which findings apply to their architecture.
 
-For platforms that want Soulbound Finance's off-chain mitigations on top of the on-chain protocol (address-bound identity verification at the auth boundary), see [SBA-Auth](https://github.com/SoulboundSecurity/SBA-Auth).
+The authentication layer that pairs with this protocol is [SBA-Auth](https://github.com/SoulboundSecurity/SBA-Auth): stateless, wallet-native authentication for high-value, low-volume control surfaces, with on-chain operator enrollment and per-action hardware-confirmed signatures. Its address-bound identity predicate is the off-chain mitigation layer referenced in the May 2026 disclosure above, its contracts follow this protocol's [Role and Trust Model](docs/PROTOCOL_SPEC.md#7-role-and-trust-model), and it ships AGPL-3.0 with a full [specification](https://github.com/SoulboundSecurity/SBA-Auth/blob/main/SPEC.md), [deployment use cases](https://github.com/SoulboundSecurity/SBA-Auth/blob/main/USE_CASES.md), and an internal adversarial review on record in its own audits log.
 
 ## Links
 

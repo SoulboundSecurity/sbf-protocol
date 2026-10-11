@@ -390,6 +390,12 @@ generated on an isolated system, held in stateless signing
 infrastructure, a secure enclave, or an HSM, with monitoring on ClaimPool
 balance and redemption patterns.
 
+The authentication pattern for the human-facing control surfaces that
+exercise these roles — stateless, wallet-native, with on-chain operator
+enrollment and per-action hardware-confirmed signatures — is specified
+separately in [SBA-Auth](https://github.com/SoulboundSecurity/SBA-Auth),
+whose contracts follow this role model.
+
 ---
 
 ## 8. Upgrade Path
