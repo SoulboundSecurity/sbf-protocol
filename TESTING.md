@@ -73,3 +73,17 @@ We do not publish our internal test suite but welcome community-contributed
 tests under the terms outlined in [CLA.md](CLA.md). Contributions should
 follow the existing contract conventions: forge-std, custom errors for all
 revert cases, happy path + revert + edge case coverage per function.
+
+## Pending — v1.0 Role Administration Revision
+
+The ClaimPool controller-role revision (see
+[`audits/2026-10-11-internal-role-administration.md`](audits/2026-10-11-internal-role-administration.md))
+adds the following cases to the internal suite before the counts above are
+current again:
+
+- Revert: non-controller calls `changeOperator`, `setGasManager`,
+  `setApprovedTarget`, `setDepositPool` (4 tests)
+- Controller rotates operator; old operator loses redemption authority,
+  new operator gains it (1 test)
+- `deploySystem` role end state: controllers on all three contracts to
+  `msg.sender`, ClaimPool operator set to the `_operator` parameter (1 test)

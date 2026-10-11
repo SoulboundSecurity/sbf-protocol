@@ -151,6 +151,13 @@ contract DepositPool {
 
     // ─── Constructor ───────────────────────────────────────────────────
 
+    /**
+     * @dev Binds the SBT gate and controller at deploy and freezes the EIP-712
+     *      domain separator to this contract address and chain. Native ETH is
+     *      whitelisted unconditionally. See docs/PROTOCOL_SPEC.md section 3.
+     * @param _sbtContract SoulBoundToken address (immutable)
+     * @param _controller Controller address (multisig custody expected)
+     */
     constructor(address _sbtContract, address _controller)
         validAddress(_sbtContract)
         validAddress(_controller)
@@ -174,6 +181,11 @@ contract DepositPool {
 
     // ─── Token Whitelist ───────────────────────────────────────────────
 
+    /**
+     * @notice Whitelist an ERC-20 token for deposits and OTU generation
+     * @dev Idempotent: re-adding a supported token is a no-op.
+     * @param token ERC-20 token address
+     */
     function addToken(address token) external onlyController validAddress(token) {
         if (supportedTokens[token]) return;
         supportedTokens[token] = true;
@@ -181,6 +193,12 @@ contract DepositPool {
         emit TokenAdded(token);
     }
 
+    /**
+     * @notice Delist an ERC-20 token from new deposits and OTU generation
+     * @dev ETH cannot be delisted. Existing balances in a delisted token remain
+     *      fully withdrawable via emergencyWithdraw (unconditional exit).
+     * @param token ERC-20 token address
+     */
     function removeToken(address token) external onlyController {
         if (token == ETH) revert InvalidAddress();
         supportedTokens[token] = false;
@@ -277,6 +295,10 @@ contract DepositPool {
 
     // ─── Fee Distribution (Internal) ───────────────────────────────────
 
+    /**
+     * @dev ETH fee distribution: protocol fee direct to treasury, then OTU
+     *      amount + gas fee to ClaimPool with accounting via receiveFundsETH.
+     */
     function _distributeETH(uint256 otuAmount, uint256 protocolFee, uint256 gasFee) internal {
         // 1. Protocol fee → treasury
         (bool s1,) = protocolTreasury.call{value: protocolFee}("");
@@ -286,6 +308,10 @@ contract DepositPool {
         IClaimPool(claimPool).receiveFundsETH{value: otuAmount + gasFee}(otuAmount, gasFee);
     }
 
+    /**
+     * @dev ERC-20 fee distribution: protocol fee direct to treasury, token
+     *      transfer to ClaimPool, then the receiveFunds accounting call.
+     */
     function _distributeERC20(address token, uint256 otuAmount, uint256 protocolFee, uint256 gasFee) internal {
         // 1. Protocol fee → treasury
         bool s1 = IERC20(token).transfer(protocolTreasury, protocolFee);
@@ -301,6 +327,12 @@ contract DepositPool {
 
     // ─── EIP-712 Attestation Verification ──────────────────────────────
 
+    /**
+     * @dev Verifies the EIP-712 purpose attestation: struct hash over
+     *      (depositor, token, amount, tier, SBT nonce, purpose string hash),
+     *      domain-bound to this contract and chain. The SBT nonce makes each
+     *      signature single-use. Scheme: docs/PROTOCOL_SPEC.md section 4.
+     */
     function _verifyAttestation(
         address depositor,
         address token,
@@ -333,6 +365,11 @@ contract DepositPool {
         if (recovered != depositor) revert InvalidAttestation();
     }
 
+    /**
+     * @dev ecrecover with malleability hardening: 65-byte signatures only,
+     *      EIP-2 low-s enforcement, v restricted to 27/28, zero-address
+     *      recovery rejected.
+     */
     function _recoverSigner(bytes32 digest, bytes calldata sig) internal pure returns (address) {
         if (sig.length != 65) revert InvalidAttestation();
 
@@ -359,6 +396,12 @@ contract DepositPool {
 
     // ─── Controller Functions ──────────────────────────────────────────
 
+    /**
+     * @notice One-time wiring of the ClaimPool address
+     * @dev Set during atomic system deploy (docs/PROTOCOL_SPEC.md section 6);
+     *      reverts AlreadyConfigured on any later call.
+     * @param _claimPool ClaimPool contract address
+     */
     function setClaimPool(address _claimPool) external onlyController validAddress(_claimPool) {
         if (claimPool != address(0)) revert AlreadyConfigured();
         claimPool = _claimPool;
@@ -373,6 +416,12 @@ contract DepositPool {
         emit ProtocolTreasurySet(_treasury);
     }
 
+    /**
+     * @notice Enable or disable the commercial fee tier
+     * @dev Disabled at deployment; generateOTU with FeeTier.COMMERCIAL reverts
+     *      while disabled. See docs/PROTOCOL_SPEC.md section 3.
+     * @param enabled True to enable the commercial tier
+     */
     function toggleCommercial(bool enabled) external onlyController {
         commercialEnabled = enabled;
         emit CommercialToggled(enabled);
@@ -389,6 +438,11 @@ contract DepositPool {
         emit FeesUpdated(_charitableBps, _commercialBps);
     }
 
+    /**
+     * @notice Transfer the controller role
+     * @dev Multisig custody expected; see docs/PROTOCOL_SPEC.md section 7.
+     * @param _newController New controller address
+     */
     function transferController(address _newController) external onlyController validAddress(_newController) {
         address old = controller;
         controller = _newController;
@@ -422,6 +476,11 @@ contract DepositPool {
 
     // ─── View Functions ────────────────────────────────────────────────
 
+    /**
+     * @notice A user's internal balance for a token
+     * @param user Account address
+     * @param token Token address (address(0) for ETH)
+     */
     function getBalance(address user, address token) external view returns (uint256) {
         return _balances[user][token];
     }
@@ -446,6 +505,12 @@ contract DepositPool {
         totalRequired = amount + totalFees;
     }
 
+    /**
+     * @notice Preflight check mirroring every generateOTU gate except the
+     *         attestation signature
+     * @dev For frontends: SBT, configuration, whitelist, tier, and balance
+     *      checks in one call, without a revert path.
+     */
     function canGenerateOTU(address user, address token, uint256 amount, FeeTier tier) external view returns (bool) {
         if (!sbtContract.hasSBT(user) || amount == 0) return false;
         if (claimPool == address(0) || protocolTreasury == address(0)) return false;
@@ -457,6 +522,9 @@ contract DepositPool {
         return _balances[user][token] >= totalRequired;
     }
 
+    /**
+     * @notice Wiring status: whether ClaimPool and treasury are set, and where
+     */
     function getConfiguration() external view returns (
         bool ready,
         address claimPoolAddr,
@@ -469,6 +537,11 @@ contract DepositPool {
         );
     }
 
+    /**
+     * @notice Pool accounting for a token: tracked deposits, OTUs generated,
+     *         and the contract's live balance
+     * @param token Token address (address(0) for ETH)
+     */
     function getPoolStats(address token) external view returns (
         uint256 totalDeposits,
         uint256 totalOTUs,
@@ -480,10 +553,18 @@ contract DepositPool {
         return (totalDeposited[token], totalOTUsGenerated, balance);
     }
 
+    /**
+     * @notice Whether ClaimPool and treasury wiring is complete
+     */
     function isConfigured() external view returns (bool) {
         return claimPool != address(0) && protocolTreasury != address(0);
     }
 
+    /**
+     * @notice Every token ever whitelisted, including since-delisted entries
+     * @dev Check supportedTokens for current status; delisted tokens remain in
+     *      this list by design.
+     */
     function getTokenList() external view returns (address[] memory) {
         return tokenList;
     }
@@ -502,6 +583,9 @@ contract DepositPool {
         return ATTESTATION_TYPEHASH;
     }
 
-    // Accept ETH (for depositETH)
+    /**
+     * @dev Accepts ETH for depositETH. Direct sends without calling depositETH
+     *      are not credited to any balance.
+     */
     receive() external payable {}
 }

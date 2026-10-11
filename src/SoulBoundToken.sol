@@ -6,9 +6,14 @@ import "./interfaces/ISoulBoundToken.sol";
 /**
  * @title SoulBoundToken
  * @notice Non-transferable token representing persistent user identity
+ * @dev One SBT per address, derived canonically from msg.sender at mint:
+ *      identity cannot be minted on behalf of another address and soulboundIds
+ *      cannot collide or be chosen. See docs/PROTOCOL_SPEC.md section 2.
  * @custom:security-contact security@soulbound.finance
  */
 contract SoulBoundToken is ISoulBoundToken {
+    /// @dev Fork deployments MUST set a unique salt before deploying: the salt
+    ///      namespaces soulboundId derivation per deployment.
     string private constant ACCOUNT_ID_SALT = "YOURSALT";
 
     struct SBTData {
@@ -69,6 +74,11 @@ contract SoulBoundToken is ISoulBoundToken {
         _;
     }
 
+    /**
+     * @dev Controller is the SoulBoundDeployer contract during an atomic system
+     *      deploy, handed off before deploySystem returns.
+     * @param _controller Initial controller address
+     */
     constructor(address _controller) validAddress(_controller) {
         controller = _controller;
     }
@@ -211,6 +221,9 @@ contract SoulBoundToken is ISoulBoundToken {
         return (data.soulboundId, data.zkpCommitment, data.nonce, data.mintedAt, data.eulaHash, data.exists);
     }
 
+    /**
+     * @notice Whether the DepositPool link has been wired
+     */
     function isInitialized() external view returns (bool) {
         return depositPoolContract != address(0);
     }

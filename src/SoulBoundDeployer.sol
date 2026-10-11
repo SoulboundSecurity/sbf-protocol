@@ -8,8 +8,11 @@ import "./ClaimPool.sol";
 /**
  * @title SoulBoundDeployer
  * @notice Atomic deployment and configuration of complete SoulBound Finance system
- * @dev Deploys all contracts, links them, configures tokens, and transfers ownership
- *      in a single transaction. Controller role goes to msg.sender for multisig setup.
+ * @dev Deploys all contracts, links them, configures tokens, and hands off roles
+ *      in a single transaction. Controller role on all three contracts goes to
+ *      msg.sender; the ClaimPool operator is set directly from the _operator
+ *      parameter. Sequence and recommended ceremony: docs/PROTOCOL_SPEC.md
+ *      section 6.
  * @custom:security-contact security@soulbound.finance
  */
 contract SoulBoundDeployer {
@@ -22,7 +25,7 @@ contract SoulBoundDeployer {
 
     // Metadata
     uint256 public deployedAt;
-    string public constant VERSION = "2.0.0";
+    string public constant VERSION = "1.0.0";
     uint256 public immutable chainId;
 
     // Events
@@ -43,6 +46,9 @@ contract SoulBoundDeployer {
     error HandoffFailed();
     error AlreadyDeployed();
 
+    /**
+     * @dev Pins the deployment chain id; deploySystem does the real work.
+     */
     constructor() {
         chainId = block.chainid;
     }
@@ -51,19 +57,24 @@ contract SoulBoundDeployer {
      * @notice Deploy complete SoulBound Finance system atomically
      * @param _protocolTreasury Address to receive protocol fees
      * @param _gasManager Address that manages gas fund for DeFi operations
+     * @param _operator ClaimPool operator; set directly to its final value and
+     *        rotatable by the ClaimPool controller thereafter
      * @param _eulaHash Initial EULA hash for SBT minting gate
      * @param _tokens ERC-20 token addresses to whitelist (ETH is automatic)
      * @return _sbt SoulBoundToken address
      * @return _deposit DepositPool address
      * @return _claim ClaimPool address
      *
-     * @dev Controller role for SBT and DepositPool goes to msg.sender.
-     *      Operator role for ClaimPool goes to msg.sender.
-     *      Transfer these to a multisig post-deployment.
+     * @dev Controller role for all three contracts goes to msg.sender; the
+     *      ClaimPool operator never transits the deploying address and signs
+     *      nothing during deployment. Recommended ceremony (multisig for all
+     *      role inputs, operator appointed later by the controller):
+     *      docs/PROTOCOL_SPEC.md section 6.
      */
     function deploySystem(
         address _protocolTreasury,
         address _gasManager,
+        address _operator,
         bytes32 _eulaHash,
         address[] calldata _tokens
     ) external returns (
@@ -73,6 +84,7 @@ contract SoulBoundDeployer {
     ) {
         if (sbtContract != address(0)) revert AlreadyDeployed();
         if (_protocolTreasury == address(0) || _gasManager == address(0)) revert InvalidAddress();
+        if (_operator == address(0)) revert InvalidAddress();
         if (_eulaHash == bytes32(0)) revert InvalidAddress();
 
         protocolTreasury = _protocolTreasury;
@@ -103,7 +115,7 @@ contract SoulBoundDeployer {
             unchecked { ++i; }
         }
 
-        if (!_handoffRoles(sbt, deposit, claim, msg.sender)) {
+        if (!_handoffRoles(sbt, deposit, claim, msg.sender, _operator)) {
             revert HandoffFailed();
         }
 
@@ -120,6 +132,11 @@ contract SoulBoundDeployer {
         return (sbtContract, depositPool, claimPool);
     }
 
+    /**
+     * @dev Wires every inter-contract reference while this contract holds all
+     *      controller roles. Any failure returns false and deploySystem reverts
+     *      the entire deployment.
+     */
     function _linkContracts(
         SoulBoundToken sbt,
         DepositPool deposit,
@@ -145,21 +162,31 @@ contract SoulBoundDeployer {
         return true;
     }
 
+    /**
+     * @dev changeOperator must precede ClaimPool's transferController: this
+     *      contract must still hold the ClaimPool controller role when it
+     *      appoints _operator.
+     */
     function _handoffRoles(
         SoulBoundToken sbt,
         DepositPool deposit,
         ClaimPool claim,
-        address newOwner
+        address newOwner,
+        address _operator
     ) internal returns (bool) {
         try sbt.transferController(newOwner) {} catch { return false; }
         try deposit.transferController(newOwner) {} catch { return false; }
-        try claim.changeOperator(newOwner) {} catch { return false; }
+        try claim.changeOperator(_operator) {} catch { return false; }
+        try claim.transferController(newOwner) {} catch { return false; }
 
         return true;
     }
 
     // ─── View Functions ────────────────────────────────────────────────
 
+    /**
+     * @notice Addresses, metadata, and link status of the deployed system
+     */
     function getDeploymentInfo() external view returns (
         address sbt,
         address deposit,
@@ -184,6 +211,11 @@ contract SoulBoundDeployer {
         );
     }
 
+    /**
+     * @dev Live cross-contract link check: SBT ↔ DepositPool wiring,
+     *      DepositPool configuration, and ClaimPool's depositPool and
+     *      gasManager references.
+     */
     function _isSystemLinked() internal view returns (bool) {
         if (sbtContract == address(0) || depositPool == address(0) || claimPool == address(0)) {
             return false;
@@ -202,6 +234,11 @@ contract SoulBoundDeployer {
         return true;
     }
 
+    /**
+     * @notice Post-deploy diagnostic: every wiring problem found, as strings
+     * @dev View-only convenience for deploy scripts and explorers; an empty
+     *      issues list with isValid true means the system is fully linked.
+     */
     function validateDeployment() external view returns (
         bool isValid,
         string[] memory issues
@@ -255,6 +292,9 @@ contract SoulBoundDeployer {
         return (issueCount == 0, finalIssues);
     }
 
+    /**
+     * @notice Live configuration snapshot read from the deployed contracts
+     */
     function getSystemConfiguration() external view returns (
         address[3] memory contracts,
         address[2] memory addresses,

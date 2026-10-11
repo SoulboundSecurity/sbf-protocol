@@ -136,7 +136,8 @@ See [TESTING.md](TESTING.md) for full test coverage documentation and contributi
 |------|--------|---------|
 | May 2026 | Independent third-party review by Gakarot, with mainnet-forked Foundry PoCs | Two findings, both fixed in [`c4d7787`](https://github.com/SoulboundSecurity/sbf-protocol/commit/c4d7787). Full record in [`audits/2026-05-28-gakarot-disclosure.md`](audits/2026-05-28-gakarot-disclosure.md) |
 | June to August 2026 | Internal security review | Gas fund target whitelist added to `ClaimPool` ([PR #7](https://github.com/SoulboundSecurity/sbf-protocol/pull/7), merged in [`38e250d`](https://github.com/SoulboundSecurity/sbf-protocol/commit/38e250d210e7869fdf83b786fa8650033a30a534)) |
-| September 2026 | Architecture-level protocol security review | Published as [Where Privacy Actually Lives](https://soulboundsecurity.substack.com) |
+| September 2026 | Architecture-level protocol security review | Published as [Where Privacy Actually Lives](https://blog.soulbound.finance/p/where-privacy-actually-lives) |
+| October 2026 | Full-stack data-flow architecture review (internal): user, money, and points paths traced end to end across the reference platform and protocol, with trust-boundary and key-custody analysis; protocol reviewed at [`cb13cf2`](https://github.com/SoulboundSecurity/sbf-protocol/commit/cb13cf2) | Technical companion published as [Soulbound Finance: Security and Privacy](https://blog.soulbound.finance/p/soulbound-finance-security-and-privacy); `ClaimPool` role administration moved to a dedicated controller role. Full record in [`audits/2026-10-11-internal-role-administration.md`](audits/2026-10-11-internal-role-administration.md) |
 
 Gakarot subsequently joined Soulbound Security as Director of Blockchain Security; later reviews are internal. Further independent third-party assurance will follow alongside our wider certification programme.
 
@@ -152,7 +153,7 @@ For platforms that want Soulbound Finance's off-chain mitigations on top of the 
 
 - **Website:** [soulboundsecurity.io](https://soulboundsecurity.io)
 - **App:** [soulbound.finance](https://soulbound.finance)
-- **Research:** [soulboundsecurity.substack.com](https://soulboundsecurity.substack.com)
+- **Research:** [blog.soulbound.finance](https://blog.soulbound.finance)
 - **X:** [@soulboundsec](https://x.com/soulboundsec)
 - **Commercial, regulatory and legal:** legal@soulboundsecurity.io
 - **Protocol security:** security@soulboundsecurity.io

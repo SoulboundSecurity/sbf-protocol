@@ -19,6 +19,12 @@ interface IERC20Approve {
 /**
  * @title ClaimPool
  * @notice Processes anonymous OTU redemptions across multiple tokens
+ * @dev Role model (docs/PROTOCOL_SPEC.md sections 5 and 7): the controller
+ *      administers roles and the gas fund target whitelist and can never move
+ *      funds; the operator executes redemptions and nothing else; the gas
+ *      manager spends the gas fund against the controller-curated whitelist.
+ *      All role changes carry appointment semantics — administrative authority
+ *      never travels with the role it administers.
  * @custom:security-contact security@soulbound.finance
  */
 contract ClaimPool {
@@ -27,6 +33,7 @@ contract ClaimPool {
     address public operator;           // Backend operator (processes redemptions)
     address public depositPool;        // Only source of inbound funds
     address public gasManager;         // Can use gas fund for DeFi ops
+    address public controller;         // Role administration
     address public constant ETH = address(0);
 
     // ─── Per-Token Balances ────────────────────────────────────────────
@@ -62,6 +69,7 @@ contract ClaimPool {
     event GasManagerChanged(address indexed oldManager, address indexed newManager);
     event DepositPoolSet(address indexed depositPool);
     event TargetWhitelisted(address indexed target, bool approved);
+    event ControllerTransferred(address indexed oldController, address indexed newController);
 
     // ─── Errors ────────────────────────────────────────────────────────
 
@@ -92,6 +100,11 @@ contract ClaimPool {
         _;
     }
 
+    modifier onlyController() {
+        if (msg.sender != controller) revert UnauthorizedAccess();
+        _;
+    }
+
     modifier validAddress(address addr) {
         if (addr == address(0)) revert InvalidAddress();
         _;
@@ -99,10 +112,18 @@ contract ClaimPool {
 
     // ─── Constructor ───────────────────────────────────────────────────
 
+    /**
+     * @dev The deploying address (the SoulBoundDeployer contract in an atomic
+     *      system deploy) holds both operator and controller during wiring;
+     *      both are handed off before deploySystem returns. See
+     *      docs/PROTOCOL_SPEC.md section 6.
+     */
     constructor() {
         operator = msg.sender;
+        controller = msg.sender;
         maxBatchSize = 50;
         emit OperatorChanged(address(0), msg.sender);
+        emit ControllerTransferred(address(0), msg.sender);
     }
 
     // ─── Fund Reception (from DepositPool only) ────────────────────────
@@ -314,6 +335,10 @@ contract ClaimPool {
 
     // ─── Internal ──────────────────────────────────────────────────────
 
+    /**
+     * @dev Shared send path for ETH (low-level call) and ERC-20 (transfer).
+     *      Reverts TransferFailed on either failure mode.
+     */
     function _transfer(address token, address to, uint256 amount) internal {
         if (token == ETH) {
             (bool success,) = to.call{value: amount}("");
@@ -326,34 +351,67 @@ contract ClaimPool {
 
     // ─── Admin ─────────────────────────────────────────────────────────
 
-    function setDepositPool(address _depositPool) external onlyOperator validAddress(_depositPool) {
+    /**
+     * @notice One-time wiring of the DepositPool address
+     * @dev Set during atomic system deploy (docs/PROTOCOL_SPEC.md section 6);
+     *      reverts AlreadyConfigured on any later call.
+     * @param _depositPool DepositPool contract address
+     */
+    function setDepositPool(address _depositPool) external onlyController validAddress(_depositPool) {
         if (depositPool != address(0)) revert AlreadyConfigured();
         depositPool = _depositPool;
         emit DepositPoolSet(_depositPool);
     }
 
-    function setGasManager(address _gasManager) external onlyOperator validAddress(_gasManager) {
+    /**
+     * @notice Appoint the gas manager
+     * @dev Controller-only appointment; the gas manager spends only against the
+     *      approved-target whitelist. See docs/PROTOCOL_SPEC.md section 7.
+     * @param _gasManager New gas manager address
+     */
+    function setGasManager(address _gasManager) external onlyController validAddress(_gasManager) {
         address old = gasManager;
         gasManager = _gasManager;
         emit GasManagerChanged(old, _gasManager);
     }
 
-    function changeOperator(address newOperator) external onlyOperator validAddress(newOperator) {
+    /**
+     * @notice Appoint the operator
+     * @dev Controller-only, single-step by design: the operator key is loaded
+     *      once into stateless signing infrastructure and never signs from a
+     *      general-purpose wallet, so no acceptance transaction exists. A
+     *      rotation to a wrong address is recoverable by rotating again.
+     *      Rationale: docs/PROTOCOL_SPEC.md section 5, Access Control.
+     * @param newOperator New operator address
+     */
+    function changeOperator(address newOperator) external onlyController validAddress(newOperator) {
         address old = operator;
         operator = newOperator;
         emit OperatorChanged(old, newOperator);
     }
 
-        /**
-     * @notice Adds or removes a target address from the whitelist for Gas Manager operations
-     * @param target The external contract address to authorize or revoke
-     * @param approved Boolean indicating if the target is permitted for interaction
-     * @dev Enforces strict protocol boundaries. Prevents arbitrary interactions with token 
-     *      contracts to ensure redemption balances remain strictly isolated, while permitting 
-     *      the gas fund to route through vetted integrations. This defense-in-depth 
-     *      measure ensures the Gas Manager operates within a predictable, restricted execution environment.
+    /**
+     * @notice Transfer the controller role
+     * @dev The controller administers roles and the target whitelist and can
+     *      never move funds. Multisig custody expected; see
+     *      docs/PROTOCOL_SPEC.md section 7.
+     * @param newController New controller address
      */
-    function setApprovedTarget(address target, bool approved) external onlyOperator {
+    function transferController(address newController) external onlyController validAddress(newController) {
+        address old = controller;
+        controller = newController;
+        emit ControllerTransferred(old, newController);
+    }
+
+    /**
+     * @notice Approve or revoke a target for gas fund operations
+     * @dev Controller-curated whitelist consumed by useGasFund and
+     *      useGasFundApprove; bounds where gas fund value can exit. See
+     *      docs/PROTOCOL_SPEC.md section 5.
+     * @param target Address to approve or revoke
+     * @param approved True to approve, false to revoke
+     */
+    function setApprovedTarget(address target, bool approved) external onlyController {
         if (target == address(0)) revert InvalidAddress();
         approvedTargets[target] = approved;
         emit TargetWhitelisted(target, approved);
@@ -361,6 +419,11 @@ contract ClaimPool {
 
     // ─── View Functions ────────────────────────────────────────────────
 
+    /**
+     * @notice Pool accounting for a token: live balance, redemption balance,
+     *         gas fund balance, and cumulative gas fees collected
+     * @param token Token address (address(0) for ETH)
+     */
     function getPoolStats(address token) external view returns (
         uint256 totalBalance,
         uint256 redemptionBal,
@@ -373,11 +436,23 @@ contract ClaimPool {
         return (balance, redemptionBalance[token], gasFundBalance[token], totalGasFeesCollected[token]);
     }
 
+    /**
+     * @notice Whether a redemption hash has already been processed
+     * @dev The double-spend guard consumed by processRedemption (revert) and
+     *      batchProcessRedemptions (silent skip). See docs/PROTOCOL_SPEC.md
+     *      section 5.
+     * @param redemptionHash keccak256 redemption identifier
+     */
     function isRedeemed(bytes32 redemptionHash) external view returns (bool) {
         return processedRedemptions[redemptionHash];
     }
 
-    // Accept ETH from DepositPool (fund reception) or gasManager (swap proceeds / top-ups)
+    /**
+     * @dev Accepts ETH from exactly two senders: the gas manager (swap proceeds
+     *      and top-ups, credited to the ETH gas fund) and the DepositPool
+     *      (fund reception; accounting happens in receiveFundsETH). All other
+     *      senders revert.
+     */
     receive() external payable {
         if (msg.sender == gasManager) {
             gasFundBalance[ETH] += msg.value;

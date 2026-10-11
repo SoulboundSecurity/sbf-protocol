@@ -289,9 +289,41 @@ path to accommodate tokens that fail to write proper ERC-20.
 | `batchProcessRedemptions` | Operator |
 | `useGasFund` | Gas manager |
 | `useGasFundApprove` | Gas manager |
-| `setDepositPool` | Operator (one-time) |
-| `setGasManager` | Operator |
-| `changeOperator` | Operator |
+| `setDepositPool` | Controller (one-time) |
+| `setGasManager` | Controller |
+| `setApprovedTarget` | Controller |
+| `changeOperator` | Controller |
+| `transferController` | Controller |
+
+Role administration is separated from role use. The operator is a pure
+execution key: it processes redemptions and nothing else. The controller
+(multisig custody expected, matching the controller role on the other
+contracts) rotates the operator and gas manager, curates the gas fund
+target whitelist, and can never move funds directly. A compromised or
+lost operator key is rotated out by the controller rather than holding
+the role irrecoverably; rotation is a break-glass or planned-migration
+action, not routine hygiene.
+
+All role changes carry appointment semantics, not ownership-transfer
+semantics: the controller administers every role, and administrative
+authority never travels with the role it administers. `changeOperator`
+installs an operator; it does not hand the new operator the power to
+rotate roles. (Prior to this revision the operator role administered
+itself, Ownable-style, so rotating it was an abdication: whoever
+received the role received rotation authority with it. That semantic
+is the substance of what this revision removes.)
+
+Operator rotation is deliberately single-step. A two-step
+propose-and-accept pattern would require the incoming operator key to
+sign an acceptance transaction from a general-purpose signing surface,
+which conflicts with the intended custody model: the operator key is
+generated on an isolated system and loaded once into stateless signing
+infrastructure that can only sign redemption batches. The failure mode
+two-step guards against (rotation to a wrong address) is non-terminal
+here, because the controller retains rotation authority and simply
+rotates again. Rotation is a break-glass action (key loss or
+compromise) or a planned migration with the platform paused, not
+routine hygiene.
 
 ---
 
@@ -299,35 +331,64 @@ path to accommodate tokens that fail to write proper ERC-20.
 
 Deploys all three contracts and configures their linkages atomically.
 
-`deploySystem(protocolTreasury, gasManager, eulaHash, tokens[])`
+`deploySystem(protocolTreasury, gasManager, operator, eulaHash, tokens[])`
 
 Execution order:
 
 1. Deploy `SoulBoundToken(controller = msg.sender)`
 2. Deploy `DepositPool(sbt, controller = msg.sender)`
-3. Deploy `ClaimPool()`
+3. Deploy `ClaimPool()` (deployer contract holds controller + operator during wiring)
 4. Link: SBT → DepositPool, DepositPool → ClaimPool + Treasury, ClaimPool → DepositPool + Gas Manager
 5. Set EULA hash on SBT
 6. Whitelist provided tokens on DepositPool
-7. Transfer ClaimPool operator to `msg.sender`
+7. Set `operator` on ClaimPool, then transfer ClaimPool controller to `msg.sender`
 
 If any step fails, the entire transaction reverts. No partial deployments.
+The operator address is set directly to its final value during the atomic
+deploy: the role never transits the deploying EOA, and the operator key
+signs nothing during deployment.
+
+Recommended deployment ceremony: pass the multisig address for
+`protocolTreasury`, `gasManager`, and `operator`; call `deploySystem` from
+a disposable EOA; transfer the three controller roles from that EOA to the
+multisig; drain the EOA. When execution infrastructure is ready, the
+multisig appoints the production operator key via `changeOperator`. Every
+role remains recoverable by the multisig thereafter.
 
 Post-deployment, the deployer EOA holds controller (SBT, DepositPool) and operator (ClaimPool) roles. These should be transferred to a multisig.
 
 ---
 
-## 7. Operator Trust Model
+## 7. Role and Trust Model
 
-The protocol has two privileged roles:
+The protocol has three privileged roles, administered uniformly: every
+contract has a controller, the controller administers that contract's
+roles and parameters, and administrative authority never travels with the
+roles it administers.
 
-**Controller** (SBT + DepositPool): Can update EULA, modify fee rates (capped), toggle commercial tier, add/remove tokens, set treasury address. Cannot access user funds. Cannot generate OTUs on behalf of users. Cannot process redemptions.
+**Controller** (all contracts): On SBT and DepositPool, can update EULA,
+modify fee rates (capped), toggle commercial tier, add/remove tokens, and
+set the treasury address. On ClaimPool, appoints the operator and gas
+manager and curates the gas fund target whitelist. Cannot access user
+funds, cannot generate OTUs on behalf of users, cannot process
+redemptions, cannot spend the gas fund. Multisig custody expected.
 
-**Operator** (ClaimPool): Can process redemptions and batch redemptions. Can change gas manager. This role is held by the backend application. The operator can send funds from ClaimPool's redemption balance to arbitrary addresses — this is by design, as the operator is the bridge between off-chain OTU validation and on-chain fund transfer.
+**Operator** (ClaimPool): Can process redemptions and batch redemptions,
+and nothing else. A pure execution key held by the backend application.
+The operator can send funds from ClaimPool's redemption balance to
+arbitrary addresses — this is by design, as the operator is the bridge
+between off-chain OTU validation and on-chain fund transfer.
 
-**Gas Manager** (ClaimPool): Can deploy gas fund to external contracts (AAVE, etc.). Cannot access redemption balance.
+**Gas Manager** (ClaimPool): Can deploy the gas fund to
+controller-approved targets only. Cannot access the redemption balance.
 
-The system assumes the operator is honest. A compromised operator could drain the ClaimPool redemption balance. Mitigation: operator key should be held in a secure enclave or HSM, with monitoring on ClaimPool balance and redemption patterns.
+The system assumes the operator is honest. A compromised operator can
+drain the ClaimPool redemption balance until the controller rotates it
+out; it cannot retain the role against the controller, reach the gas
+fund, or alter role administration. Mitigation: operator key should be
+generated on an isolated system, held in stateless signing
+infrastructure, a secure enclave, or an HSM, with monitoring on ClaimPool
+balance and redemption patterns.
 
 ---
 
